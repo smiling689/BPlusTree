@@ -93,17 +93,17 @@ namespace bustub {
 
         /**
          * @brief For test only, return a string representing all keys in
-         * this internal page, formatted as "(key1,key2,key3,...)"
-         *
-         * @return The string representation of all keys in the current internal page
-         */
-        void SetValueAt(int index, const ValueType &value);
-
-        auto ToString() const -> std::string {
-            std::string kstr = "(";
-            bool first = true;
-
-            // First key of internal page is always invalid
+         * this internal pagee, formatted as "(key1,key2,key3,...)"
+            //         *
+            //         * @return The string representation of all keys in the current internal page
+            //         */
+            //        void SetValueAt(int index, const ValueType &value);
+            //
+            //        auto ToString() const -> std::string {
+            //            std::string kstr = "(";
+            //            bool first = true;
+            //
+            //            // First key of internal pag is always invalid
             for (int i = 1; i < GetSize(); i++) {
                 KeyType key = KeyAt(i);
                 if (first) {
