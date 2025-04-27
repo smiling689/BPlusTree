@@ -17,11 +17,203 @@
 
 <img src="https://notes.sjtu.edu.cn/uploads/upload_5879015cd51b787ca781b64ac3e5e7b2.png" width="800">
 
-# 主体任务
-
-请你修改 `src/include/storage/index/b_plus_tree.h` 和 `src/storage/index/b_plus_tree.cpp`, 实现 b+ 树的查找、插入和删除函数。 在此之后， 请你完善 b+ 树的查找、插入、删除函数， 使其线程安全。
-
 # 熟悉项目代码
+
+## Summary
+
+总结一下可能用到的所有函数：
+
+#### page
+
+```c++
+  char* data_;//数据
+  page_id_t page_id_ = INVALID_PAGE_ID;//Page的唯一标识
+  ReaderWriterLatch rwlatch_;//读写锁
+```
+
+
+#### b_plus_tree_page（包在page->data中）
+
+```cpp
+//b+树page的基类
+class BPlusTreePage{
+  auto IsLeafPage() const -> bool;
+  void SetPageType(IndexPageType page_type);
+
+  auto GetSize() const -> int;
+  void SetSize(int size);
+  void IncreaseSize(int amount);
+
+  auto GetMaxSize() const -> int;
+  void SetMaxSize(int max_size);
+  auto GetMinSize() const -> int;
+
+  IndexPageType page_type_;
+  int size_;
+  int max_size_;
+};
+```
+
+```cpp
+//b+树page的根节点类
+class BPlusTreeHeaderPage{
+  page_id_t root_page_id_;
+};
+```
+
+```cpp
+class BPlusTreeInternalPage : public BPlusTreePage{
+  void Init(int max_size = INTERNAL_PAGE_SIZE);
+  auto KeyAt(int index) const -> KeyType;
+  auto ValueAt(int index) const -> ValueType;
+  void SetKeyAt(int index, const KeyType& key);
+  auto ValueIndex(const ValueType& value) const -> int;
+
+  MappingType array_[0];
+};
+```
+
+```cpp
+class BPlusTreeLeafPage : public BPlusTreePage{
+  void Init(int max_size = LEAF_PAGE_SIZE);
+  auto GetNextPageId() const -> page_id_t;
+  void SetNextPageId(page_id_t next_page_id);
+  auto KeyAt(int index) const -> KeyType;
+  auto ValueAt(int index) const -> ValueType;
+  void SetKeyAt(int index, const KeyType& key);
+  void SetValueAt(int index, const ValueType & value);
+  private:
+  page_id_t next_page_id_;
+  MappingType array_[0];
+};
+```
+
+别忘了可以使用 `BPlusTreePage` 的成员函数 (如 `GetSize`, `IncreaseSize`)！
+
+#### page_guard
+
+```cpp
+class BasicPageGuard{
+  void Drop();
+  auto UpgradeRead() -> ReadPageGuard;
+  auto UpgradeWrite() -> WritePageGuard;
+  auto PageId() -> page_id_t { return page_->GetPageId(); }
+  template <class T>
+  auto As() -> const T*{
+    return reinterpret_cast<const T*>(GetData());
+  }
+  template <class T>
+  auto AsMut() -> T*{
+    return reinterpret_cast<T*>(GetDataMut());
+  }
+  BufferPoolManager* bpm_{nullptr};
+  Page* page_{nullptr};
+  bool is_dirty_{false};
+};
+
+// ReadPageGuard 会在构造时获取读锁， 析构时释放读锁
+class ReadPageGuard{
+  void Drop();
+  auto PageId() -> page_id_t { return guard_.PageId(); }
+  template <class T>
+  auto As() -> const T*{
+    return guard_.As<T>();
+  }
+    BasicPageGuard guard_;
+    bool unlock_guard{false};
+};
+
+// WritePageGuard 会在构造时获取写锁， 析构时释放写锁
+class WritePageGuard{
+  void Drop();
+  auto PageId() -> page_id_t { return guard_.PageId(); }
+  auto GetData() -> const char* { return guard_.GetData(); }
+  template <class T>
+  auto As() -> const T*{
+    return guard_.As<T>();
+  }
+  template <class T>
+  auto AsMut() -> T*{
+    return guard_.AsMut<T>();
+  }
+    BasicPageGuard guard_;
+    bool unlock_guard{false};
+};
+```
+
+##### page_guard 使用示例
+
+```cpp
+INDEX_TEMPLATE_ARGUMENTS
+auto BPLUSTREE_TYPE::IsEmpty() const  ->  bool{
+  ReadPageGuard guard = bpm_ -> FetchPageRead(header_page_id_);
+  auto root_header_page = guard.template As<BPlusTreeHeaderPage>();
+  bool is_empty = root_header_page -> root_page_id_ == INVALID_PAGE_ID;
+  return is_empty;
+}
+```
+
+#### FetchPage by buffer pool manager
+
+ `src/include/buffer/buffer_pool_manager.h `
+
+```cpp
+  auto FetchPageRead(page_id_t page_id) -> ReadPageGuard;
+  auto FetchPageWrite(page_id_t page_id) -> WritePageGuard;
+  auto NewPageGuarded(page_id_t* page_id, AccessType access_type = AccessType::Unknown) -> BasicPageGuard;
+```
+
+#### Create New Page
+
+
+下面是一个使用 `NewPageGuarded` 函数的例子：
+
+```cpp
+page_id_t root_page_id;
+// 这个临时变量用于保存此时分配的 page id
+auto new_page_guard = bpm_ -> NewPageGuarded(&root_page_id);
+// 调用 `NewPageGuarded`, 该函数会新建一个 Page， 并为它分配 ID
+// 然后填入我们传入的 root_page_id 中
+// 最后以 page_guard 的形式返回给我们
+// 此时返回的是 page_guard 的基类 BasicPageGuard 
+// 请注意， 此时该 page 未上锁。
+// 如果你希望为它上锁， 可以使用上面提到的 UpgradeRead / UpgradeWrite
+// 你也可以尝试使用其他方法为 BasicPageGuard 上锁
+```
+
+##### Fetch Page
+
+`bpm_ -> FetchPageRead` 和 `bpm_ -> FetchPageWrite` 用于通过磁盘 IO ， 根据 `page id` 得到一个用于读的 `ReadPageGuard` 或者一个用于写 `WritePageGuard` `ReadPageGuard` 会自动获取该 `page` 的读锁， 并在析构时释放读锁。 `WritePageGuard` 会自动获取该 `page` 的写锁， 并在析构时释放写锁。
+
+
+下面是一些使用 `FetchPageRead / FetchPageWrite` 的例子：
+
+```cpp
+  ReadPageGuard guard = bpm_ -> FetchPageRead(head_guard.As<BPlusTreeHeaderPage>() -> root_page_id_);
+    //读到 root page, 即 B+ 树的根节点
+  auto tmp_page = guard.template As<BPlusTreePage>();
+    //下面需要一步步寻找参数 key， 先把 guard 的 data 部分解释为 BPlusTreePage. 这一步实际上是我们这个 project 的惯例 : 拿到 page guard, 然后用 As 成员函数拿到 b_plus_tree_page 的指针。
+```
+
+#### B+ 树核心代码
+
+这里需要注意的是， 我们传入了一个比较函数的函数对象， 如果你希望对 `key` 进行比较， 请使用这里的 `comparator_` 函数对象, 它的实现如下:
+$$
+comparator_\ \left(lhs, rhs\right)=\left\{
+\begin{aligned} 1 : lhs > rhs  \\ 0 : lhs = rhs \\  -1 :lhs < rhs\end{aligned}
+\right.
+$$
+
+
+如果你希望在测试时修改索引的值为某一整数， 你可以使用 `SetFromInteger`, 如
+
+```cpp
+  KeyType index_key;
+  index_key.SetFromInteger(key);
+  Remove(index_key, txn);
+```
+
+## 分类介绍：
 
 ## page
 
@@ -137,23 +329,14 @@ class BasicPageGuard{
   auto UpgradeRead() -> ReadPageGuard;
   auto UpgradeWrite() -> WritePageGuard;
   auto PageId() -> page_id_t { return page_->GetPageId(); }
-  auto GetData() -> const char* { return page_->GetData(); }
   template <class T>
   auto As() -> const T*{
     return reinterpret_cast<const T*>(GetData());
-  }
-  auto GetDataMut() -> char*{
-    is_dirty_ = true;
-    return page_->GetData();
   }
   template <class T>
   auto AsMut() -> T*{
     return reinterpret_cast<T*>(GetDataMut());
   }
-  private:
-  friend class ReadPageGuard;
-  friend class WritePageGuard;
-
   BufferPoolManager* bpm_{nullptr};
   Page* page_{nullptr};
   bool is_dirty_{false};
@@ -163,12 +346,10 @@ class BasicPageGuard{
 class ReadPageGuard{
   void Drop();
   auto PageId() -> page_id_t { return guard_.PageId(); }
-  auto GetData() -> const char* { return guard_.GetData(); }
   template <class T>
   auto As() -> const T*{
     return guard_.As<T>();
   }
-  private:
     BasicPageGuard guard_;
     bool unlock_guard{false};
 };
@@ -182,12 +363,10 @@ class WritePageGuard{
   auto As() -> const T*{
     return guard_.As<T>();
   }
-  auto GetDataMut() -> char* { return guard_.GetDataMut(); }
   template <class T>
   auto AsMut() -> T*{
     return guard_.AsMut<T>();
   }
-  private:
     BasicPageGuard guard_;
     bool unlock_guard{false};
 };
@@ -232,15 +411,10 @@ auto PageId() -> page_id_t { return guard_.PageId(); }
 
 ```cpp
 INDEX_TEMPLATE_ARGUMENTS
-auto BPLUSTREE_TYPE::IsEmpty() const  ->  bool
-{
+auto BPLUSTREE_TYPE::IsEmpty() const  ->  bool{
   ReadPageGuard guard = bpm_ -> FetchPageRead(header_page_id_);
   auto root_header_page = guard.template As<BPlusTreeHeaderPage>();
   bool is_empty = root_header_page -> root_page_id_ == INVALID_PAGE_ID;
-  // Just check if the root_page_id is INVALID
-  // usage to fetch a page:
-  // fetch the page guard   ->   call the "As" function of the page guard
-  // to reinterprete the data of the page as "BPlusTreePage"
   return is_empty;
 }
 ```
@@ -251,17 +425,13 @@ auto BPLUSTREE_TYPE::IsEmpty() const  ->  bool
 
 ## FetchPage by buffer pool manager
 
-请见 `src/include/buffer/buffer_pool_manager.h `. 这份代码实际上是用于实现缓存池， 具体内容你不需要理解。
-
-我们需要用到的函数有：
+ `src/include/buffer/buffer_pool_manager.h `
 
 ```cpp
   auto FetchPageRead(page_id_t page_id) -> ReadPageGuard;
   auto FetchPageWrite(page_id_t page_id) -> WritePageGuard;
   auto NewPageGuarded(page_id_t* page_id, AccessType access_type = AccessType::Unknown) -> BasicPageGuard;
 ```
-
-请你在本次 project 中将它们视为一个黑盒。
 
 ### Create New Page
 
@@ -273,7 +443,6 @@ auto BPLUSTREE_TYPE::IsEmpty() const  ->  bool
 ```cpp
 page_id_t root_page_id;
 // 这个临时变量用于保存此时分配的 page id
-
 auto new_page_guard = bpm_ -> NewPageGuarded(&root_page_id);
 // 调用 `NewPageGuarded`, 该函数会新建一个 Page， 并为它分配 ID
 // 然后填入我们传入的 root_page_id 中
@@ -286,7 +455,7 @@ auto new_page_guard = bpm_ -> NewPageGuarded(&root_page_id);
 
 ### Fetch Page
 
-`bpm_ -> FetchPageRead` 和 `bpm_ -> FetchPageWrite` 用于通过磁盘 IO ， 根据 `page id` 得到一个用于读的 `ReadPageGuard` 或者一个用于写 `WritePageGuard`. 如果你好奇其中的细节(如缓存池)， 请私信我。 `ReadPageGuard` 会自动获取该 `page` 的读锁， 并在析构时释放读锁。 `WritePageGuard` 会自动获取该 `page` 的写锁， 并在析构时释放写锁。
+`bpm_ -> FetchPageRead` 和 `bpm_ -> FetchPageWrite` 用于通过磁盘 IO ， 根据 `page id` 得到一个用于读的 `ReadPageGuard` 或者一个用于写 `WritePageGuard` `ReadPageGuard` 会自动获取该 `page` 的读锁， 并在析构时释放读锁。 `WritePageGuard` 会自动获取该 `page` 的写锁， 并在析构时释放写锁。
 
 
 下面是一些使用 `FetchPageRead / FetchPageWrite` 的例子：
@@ -298,13 +467,11 @@ auto new_page_guard = bpm_ -> NewPageGuarded(&root_page_id);
  * @return : index iterator
  */
 INDEX_TEMPLATE_ARGUMENTS
-auto BPLUSTREE_TYPE::Begin(const KeyType& key)  ->  INDEXITERATOR_TYPE
-{
+auto BPLUSTREE_TYPE::Begin(const KeyType& key)  ->  INDEXITERATOR_TYPE{
   ReadPageGuard head_guard = bpm_ -> FetchPageRead(header_page_id_);
     //读到 header page
 
-  if (head_guard.template As<BPlusTreeHeaderPage>() -> root_page_id_ == INVALID_PAGE_ID)
-  {
+  if (head_guard.template As<BPlusTreeHeaderPage>() -> root_page_id_ == INVALID_PAGE_ID){
     return End();
   }
     //如果 header page 存的 root_page_id 是 INVALID, 说明树空， 返回 End()
@@ -318,8 +485,7 @@ auto BPLUSTREE_TYPE::Begin(const KeyType& key)  ->  INDEXITERATOR_TYPE
   auto tmp_page = guard.template As<BPlusTreePage>();
     //下面需要一步步寻找参数 key， 先把 guard 的 data 部分解释为 BPlusTreePage. 这一步实际上是我们这个 project 的惯例 : 拿到 page guard, 然后用 As 成员函数拿到 b_plus_tree_page 的指针。
 
-  while (!tmp_page -> IsLeafPage())
-  { 
+  while (!tmp_page -> IsLeafPage()){ 
     //如果不是叶子结点，我就一直找
 
     auto internal = reinterpret_cast<const InternalPage*>(tmp_page);
@@ -328,8 +494,7 @@ auto BPLUSTREE_TYPE::Begin(const KeyType& key)  ->  INDEXITERATOR_TYPE
     int slot_num = BinaryFind(internal, key);
     //然后调用辅助函数 BinaryFind 在 page 内部二分查找这个 key， 找到该向下走哪个指针
 
-    if (slot_num == -1)
-    {
+    if (slot_num == -1){
       return End();
     }
     //异常处理
@@ -346,8 +511,7 @@ auto BPLUSTREE_TYPE::Begin(const KeyType& key)  ->  INDEXITERATOR_TYPE
   int slot_num = BinaryFind(leaf_page, key);
     //在叶子节点内部二分查找，找到对应的 key
 
-  if (slot_num != -1)
-  {
+  if (slot_num != -1){
     //如果找到了， 构造对应迭代器。这个迭代器可以用于顺序访问所有数据。 本次 project 中不涉及迭代器的处理。
     return INDEXITERATOR_TYPE(bpm_, guard.PageId(), slot_num);
   } 
@@ -359,26 +523,14 @@ auto BPLUSTREE_TYPE::Begin(const KeyType& key)  ->  INDEXITERATOR_TYPE
 
 你可能会问， 为什么没有一个函数把 `page` 写回磁盘呢？ 实际上， 只要你析构 `PageGuard`, 对应的 `page` 就会自动写回磁盘。
 
-(这里有更多关于缓存池的细节， 如果感兴趣可以了解一下数据库缓存池)
-
 ## B+ 树核心代码
 
 请见 `src/include/storage/index/b_plus_tree.h` 与 `src/storage/index/b_plus_tree.cpp`
 
-请注意，你并不需要关心任何和 `BufferPoolManager`, `Transaction` 相关的数据成员和函数参数。 
-
-你需要实现 B+ 树的查找 (`GetValue`)、插入（`Insert`）与删除 (`Remove`) 操作。 请注意， 整个 B+ 树存储于磁盘上， 因此每个结点都是以 `page` 形式存在， 需要使用 `FetchPageRead / FetchPageWrite` 函数将 `page` 从磁盘拿到内存中。
+请注意， 整个 B+ 树存储于磁盘上， 因此每个结点都是以 `page` 形式存在， 需要使用 `FetchPageRead / FetchPageWrite` 函数将 `page` 从磁盘拿到内存中。
 
 
 ```cpp
-/*****************************************************************************
- * SEARCH
- *****************************************************************************/
-/*
- * Return the only value that associated with input key
- * This method is used for point query
- * @return : true means key exists
- */
 INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::GetValue(const KeyType& key,
                               std::vector<ValueType>* result, Transaction* txn)
@@ -388,18 +540,6 @@ auto BPLUSTREE_TYPE::GetValue(const KeyType& key,
   return true;
 }
 
-/*****************************************************************************
- * INSERTION
- *****************************************************************************/
-/*
- * Insert constant key & value pair into b+ tree
- * if current tree is empty, start new tree, update root page id and insert
- * entry, otherwise insert into leaf page.
- * @return: since we only support unique key, if user try to insert duplicate
- * keys return false, otherwise return true.
- */
-
-
 INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::Insert(const KeyType& key, const ValueType& value,
                             Transaction* txn)  ->  bool
@@ -407,18 +547,6 @@ auto BPLUSTREE_TYPE::Insert(const KeyType& key, const ValueType& value,
   //Your code here
   return true;
 }
-
-
-/*****************************************************************************
- * REMOVE
- *****************************************************************************/
-/*
- * Delete key & value pair associated with input key
- * If current tree is empty, return immediately.
- * If not, User needs to first find the right leaf page as deletion target, then
- * delete entry from leaf page. Remember to deal with redistribute or merge if
- * necessary.
- */
 
 INDEX_TEMPLATE_ARGUMENTS
 void BPLUSTREE_TYPE::Remove(const KeyType& key, Transaction* txn)
@@ -440,8 +568,7 @@ BPLUSTREE_TYPE::BPlusTree(std::string name, page_id_t header_page_id,
       comparator_(std::move(comparator)),
       leaf_max_size_(leaf_max_size),
       internal_max_size_(internal_max_size),
-      header_page_id_(header_page_id)
-{
+      header_page_id_(header_page_id){
   WritePageGuard guard = bpm_ -> FetchPageWrite(header_page_id_);
   // In the original bpt, I fetch the header page
   // thus there's at least one page now
@@ -453,31 +580,12 @@ BPLUSTREE_TYPE::BPlusTree(std::string name, page_id_t header_page_id,
 ```
 
 这里需要注意的是， 我们传入了一个比较函数的函数对象， 如果你希望对 `key` 进行比较， 请使用这里的 `comparator_` 函数对象, 它的实现如下:
+$$
+comparator_\ \left(lhs, rhs\right)=\left\{
+\begin{aligned} 1 : lhs > rhs  \\ 0 : lhs = rhs \\  -1 :lhs < rhs\end{aligned}
+\right.
+$$
 
-```cpp
-  inline auto operator()(const GenericKey<KeySize>& lhs,
-                         const GenericKey<KeySize>& rhs) const -> int
-  {
-    uint32_t column_count = key_schema_->GetColumnCount();
-
-    for (uint32_t i = 0; i < column_count; i++)
-    {
-      Value lhs_value = (lhs.ToValue(key_schema_, i));
-      Value rhs_value = (rhs.ToValue(key_schema_, i));
-
-      if (lhs_value.CompareLessThan(rhs_value) == CmpBool::CmpTrue)
-      {
-        return -1;
-      }
-      if (lhs_value.CompareGreaterThan(rhs_value) == CmpBool::CmpTrue)
-      {
-        return 1;
-      }
-    }
-    // equals
-    return 0;
-  }
-```
 
 如果你希望在测试时修改索引的值为某一整数， 你可以使用 `SetFromInteger`, 如
 
@@ -487,17 +595,7 @@ BPLUSTREE_TYPE::BPlusTree(std::string name, page_id_t header_page_id,
   Remove(index_key, txn);
 ```
 
-
-
-
-
-
-
-
-
-
-
-## Context
+## Context(Optinal)
 
 请见 `src/include/storage/index/b_plus_tree.h`.
 
