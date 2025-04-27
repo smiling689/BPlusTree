@@ -82,34 +82,46 @@ namespace bustub {
      * @return : true means key exists
      */
     INDEX_TEMPLATE_ARGUMENTS
-    auto BPLUSTREE_TYPE::GetValue(const KeyType &key,
-                                  std::vector<ValueType> *result, Transaction *txn)
-        -> bool {
-        auto header_page_guard = bpm_->FetchPageRead(header_page_id_);
-        auto header_page = header_page_guard.template As<BPlusTreeHeaderPage>();
-        if (header_page->root_page_id_ == INVALID_PAGE_ID) {
+    auto BPLUSTREE_TYPE::GetValue(const KeyType &key, std::vector<ValueType> *result, Transaction *txn) -> bool {
+        ReadPageGuard head_guard = bpm_->FetchPageRead(header_page_id_);
+        //读到 header page
+        if (head_guard.template As<BPlusTreeHeaderPage>()->root_page_id_ == INVALID_PAGE_ID) {
             return false;
         }
-        page_id_t current_page_id = header_page->root_page_id_;
-
-        while (true) {
-            auto page_guard = bpm_->FetchPageRead(current_page_id);
-            auto page = page_guard.template As<BPlusTreePage>();
-
-            if (page->IsLeafPage()) {
-                auto leaf_page = page_guard.template As<LeafPage>();
-                int index = BinaryFind(leaf_page, key);
-                if (index == -1 || comparator_(leaf_page->KeyAt(index), key) != 0) {
-                    return false;
-                }
-                result->push_back(leaf_page->ValueAt(index));
-                return true;
+        //如果 header page 存的 root_page_id 是 INVALID, 说明树空， 返回 false
+        ReadPageGuard guard = bpm_->FetchPageRead(head_guard.As<BPlusTreeHeaderPage>()->root_page_id_);
+        head_guard.Drop();
+        auto tmp_page = guard.template As<BPlusTreePage>();
+        //下面需要一步步寻找参数 key， 先把 guard 的 data 部分解释为 BPlusTreePage.
+        while (!tmp_page->IsLeafPage()) {
+            //如果不是叶子结点，我就一直找
+            auto internal = reinterpret_cast<const InternalPage *>(tmp_page);
+            //这里是内部结点， 那就把它 cast 成 InternalPage. InternalPage 是 BPlusTreeInternalPage 的别名。
+            int slot_num = BinaryFind(internal, key);
+            if (slot_num == -1) {
+                return false;
             }
-
-            auto internal_page = page_guard.template As<InternalPage>();
-            current_page_id = internal_page->ValueAt(BinaryFind(internal_page, key));
+            guard = bpm_->FetchPageRead(reinterpret_cast<const InternalPage *>(tmp_page)->ValueAt(slot_num));
+            //现在向下走， 根据上方得到的 page id 拿到新的 page guard。
+            tmp_page = guard.template As<BPlusTreePage>();
+            //然后再用相同方式把 page guard 的数据部分解释为 BPlusTreePage, 继续循环。
         }
+        auto *leaf_page = reinterpret_cast<const LeafPage *>(tmp_page);
+        //最后跳出循环， 说明找到了叶子结点。
+        int slot_num = BinaryFind(leaf_page, key);
+        //在叶子节点内部二分查找，找到对应的 key
+        if (slot_num != -1 && comparator_(leaf_page->KeyAt(slot_num), key) == 0) {
+            result->push_back(leaf_page->ValueAt(slot_num));
+            return true;
+        }
+        return false;
     }
+
+    INDEX_TEMPLATE_ARGUMENTS
+    auto BPLUSTREE_TYPE::FindLeafPage(const KeyType &key, Op op) {
+
+    }
+
 
 
     /*****************************************************************************
@@ -122,48 +134,51 @@ namespace bustub {
      * @return: since we only support unique key, if user try to insert duplicate
      * keys return false, otherwise return true.
      */
-
-
     INDEX_TEMPLATE_ARGUMENTS
     auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value,
                                 Transaction *txn) -> bool {
-    }
-
-    auto IsSafe_Insert(BPlusTreePage *page, bool is_root) -> bool {
-        if (page->IsLeafPage()) {
-            return page->GetSize() + 1 < page->GetMaxSize();
+        WritePageGuard head_guard = bpm_->FetchPageWrite(header_page_id_);
+        auto head = head_guard.template AsMut<BPlusTreeHeaderPage>();
+        if (head->root_page_id_ == INVALID_PAGE_ID) {
+            //树为空，新建一棵树，插入key和value
+            auto root_guard = bpm_->NewPageGuarded(&head->root_page_id_);
+            auto leaf_page = root_guard.AsMut<LeafPage>();
+            leaf_page->Init(leaf_max_size_);
+            leaf_page->SetSize(1);
+            leaf_page->SetAt(0, key, value);
+            head_guard.Drop();
+            return true;
         }
-        return page->GetSize() < page->GetMaxSize();
+        WritePageGuard guard = bpm_->FetchPageWrite(head_guard.As<BPlusTreeHeaderPage>()->root_page_id_);
+        head_guard.Drop();
+        auto tmp_page = guard.template As<BPlusTreePage>();
+        while (!tmp_page->IsLeafPage()) {
+            auto internal = reinterpret_cast<const InternalPage *>(tmp_page);
+            int slot_num = BinaryFind(internal, key);
+            // if (slot_num == -1) {
+            //     return false;
+            // }
+            guard = bpm_->FetchPageWrite(reinterpret_cast<const InternalPage *>(tmp_page)->ValueAt(slot_num));
+            tmp_page = guard.template As<BPlusTreePage>();
+        }
+        auto leaf_guard = guard.template AsMut<LeafPage>();
+        auto *leaf_page = reinterpret_cast<LeafPage *>(leaf_guard);
+        int slot_num = BinaryFind(leaf_page, key);
+        if (slot_num != -1 && comparator_(leaf_page->KeyAt(slot_num), key) == 0) {
+            return false;
+        }
+        ++slot_num;
+        leaf_page->IncreaseSize(1);
+        for (int i = leaf_page->GetSize(); i > slot_num; --i) {
+            leaf_page->SetAt(i, leaf_page->KeyAt(i - 1), leaf_page->ValueAt(i - 1));
+        }
+        leaf_page->SetAt(slot_num, key, value);
+        return true;
     }
 
     INDEX_TEMPLATE_ARGUMENTS
-    auto BPLUSTREE_TYPE::FindLeafPage(const KeyType &key) {
-        // 从 header page 获取 root page id
-        ReadPageGuard header_page_guard = bpm_->FetchPageRead(header_page_id_);
-        auto header_page = header_page_guard.template As<BPlusTreeHeaderPage>();
-        page_id_t current_page_id = header_page->root_page_id_;
-        header_page_guard.Drop();
+    void BPLUSTREE_TYPE::InsertIntoParent(const KeyType &key, page_id_t new_child_id, int index) {
 
-        // 如果 root page id 无效，返回空的 ReadPageGuard
-        if (current_page_id == INVALID_PAGE_ID) {
-            return ReadPageGuard();
-        }
-
-        // 遍历树直到找到叶子节点
-        while (true) {
-            ReadPageGuard page_guard = bpm_->FetchPageRead(current_page_id);
-            auto page = page_guard.template As<BPlusTreePage>();
-
-            if (page->IsLeafPage()) {
-                // 如果是叶子节点，返回该页面的 ReadPageGuard
-                return page_guard;
-            }
-
-            // 如果是内部节点，找到合适的子节点页面 ID
-            auto internal_page = page_guard.template As<InternalPage>();
-            int index = BinaryFind(internal_page, key);
-            current_page_id = internal_page->ValueAt(index);
-        }
     }
 
 
@@ -236,9 +251,7 @@ namespace bustub {
      * @return : index iterator
      */
     INDEX_TEMPLATE_ARGUMENTS
-    auto BPLUSTREE_TYPE::Begin() -> INDEXITERATOR_TYPE
-        //Just go left forever
-    {
+    auto BPLUSTREE_TYPE::Begin() -> INDEXITERATOR_TYPE {
         ReadPageGuard head_guard = bpm_->FetchPageRead(header_page_id_);
         if (head_guard.template As<BPlusTreeHeaderPage>()->root_page_id_ == INVALID_PAGE_ID) {
             return End();
