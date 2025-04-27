@@ -127,7 +127,6 @@ namespace bustub {
     INDEX_TEMPLATE_ARGUMENTS
     auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value,
                                 Transaction *txn) -> bool {
-
     }
 
     auto IsSafe_Insert(BPlusTreePage *page, bool is_root) -> bool {
@@ -166,7 +165,6 @@ namespace bustub {
             current_page_id = internal_page->ValueAt(index);
         }
     }
-
 
 
     /*****************************************************************************
