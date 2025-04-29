@@ -198,7 +198,28 @@ namespace bustub {
         if (leaf_page->GetSize() < leaf_page->GetMaxSize()) {
             return true;
         }
+        //上面是最基本的插入，没有附加任何向上的操作，下面开始考虑这种情况。Not done yet----By smiling 4.29
 
+        //该叶子结点满了，需要分裂
+        auto new_page = 0;
+        auto new_guard = bpm_->NewPageGuarded(&new_page);
+        auto new_leaf = new_guard.AsMut<LeafPage>();
+        //将要分裂的page和新增的page相连,以及初始化
+        //leaf ---> leaf_next  变成
+        //leaf ---> new_leaf ---> leaf_next
+        new_leaf->Init(leaf_max_size_);
+        new_leaf->SetSize(leaf_page->GetSize() - leaf_page->GetMinSize());
+        new_leaf->SetNextPageId(leaf_page->GetNextPageId());
+        leaf_page->SetNextPageId(new_guard.PageId());
+        //将后半部分的key和value都放到新的page上
+        for (int i = leaf_page->GetMinSize(); i < leaf_page->GetSize(); ++i) {
+            new_leaf->SetAt(i - leaf_page->GetMinSize(), leaf_page->KeyAt(i), leaf_page->ValueAt(i));
+        }
+        leaf_page->SetSize(leaf_page->GetMinSize());
+        //要上去的那个key，向上插入，调用辅助函数InsertUp来插入
+        KeyType up_key = new_leaf->KeyAt(0);
+        //需要处理几个？现在我们在leaf，所以需要处理的是path中除了leaf的所有internal，总计-1个
+        Insert_Up(up_key, new_guard.PageId(), path);
         return true;
     }
 
@@ -209,6 +230,108 @@ namespace bustub {
         } else {
             return page->GetSize() < page->GetMaxSize();
         }
+    }
+
+    INDEX_TEMPLATE_ARGUMENTS
+    void BPLUSTREE_TYPE::Insert_Up(const KeyType &key, page_id_t right_child, Context &path) {
+        //到head了  done
+        if (path.write_set_.size() == 1) {
+            //到head了。说明根满了，需要分裂-->需要换一个根来用。树的深度会+1
+            int new_root_id;
+            auto new_root_guard = bpm_->NewPageGuarded(&new_root_id);
+            auto new_root = new_root_guard.AsMut<InternalPage>();
+
+            new_root->Init(internal_max_size_);
+            new_root->SetSize(2);
+            // new_root->SetKeyAt(0, key);
+            //根节点只有一个，两个page箭头指向原来的根以及根在上一次分裂出来的page
+            new_root->SetKeyAt(1, key);
+            new_root->SetValueAt(0, path.write_set_[0].PageId());
+            new_root->SetValueAt(1, right_child);
+            //修改header！用AsMut
+            auto header_page = path.header_page_->AsMut<BPlusTreeHeaderPage>();
+            header_page->root_page_id_ = new_root_id;
+
+            return;
+        }
+
+        auto father_guard = path.write_set_[path.write_set_.size() - 2].AsMut<InternalPage>();
+        //如果父亲不用分裂，那这就是最后一次了
+        if (father_guard->GetSize() < father_guard->GetMaxSize()) {
+            //我要插的是key的后面，所以记得+1
+            int slot_num = BinaryFind(father_guard, key);
+            father_guard->IncreaseSize(1);
+            //同样的，后面的后挪一位
+            for (int i = father_guard->GetSize() - 1; i > slot_num; --i) {
+                father_guard->SetKeyAt(i + 1, father_guard->KeyAt(i));
+                father_guard->SetValueAt(i + 1, father_guard->ValueAt(i));
+            }
+            // father_guard->SetKeyAt(slot_num, key);
+            // father_guard->SetValueAt(slot_num, right_child);
+            father_guard->SetKeyAt(slot_num + 1, key);
+            father_guard->SetValueAt(slot_num + 1, right_child);
+            return;
+        }
+        //如果还得分裂，那就要看插到那边，然后递归向上走
+        auto new_father_id = 0;
+        auto new_father_guard = bpm_->NewPageGuarded(&new_father_id);
+        auto new_father_page = new_father_guard.AsMut<InternalPage>();
+
+        int slot_num = BinaryFind(father_guard, key) + 1;
+        int change = father_guard->GetMinSize();
+        int new_size = father_guard->GetMaxSize() + 1 - change;
+        //分类讨论
+        if (slot_num < change) {
+            //插到左边，先设置大小
+            new_father_page->Init(internal_max_size_);
+            new_father_page->SetSize(new_size);
+            //挪动
+            for (int i = change; i < father_guard->GetSize(); ++i) {
+                new_father_page->SetKeyAt(i - change + 1, father_guard->KeyAt(i));
+                new_father_page->SetValueAt(i - change + 1, father_guard->ValueAt(i));
+            }
+            new_father_page->SetKeyAt(0, father_guard->KeyAt(change - 1));
+            new_father_page->SetValueAt(0, father_guard->ValueAt(change - 1));
+            for (int i = change; i >= slot_num; --i) {
+                father_guard->SetKeyAt(i + 1, father_guard->KeyAt(i));
+                father_guard->SetValueAt(i + 1, father_guard->ValueAt(i));
+            }
+            father_guard->SetKeyAt(slot_num, key);
+            father_guard->SetValueAt(slot_num, right_child);
+        }
+        else if (slot_num == change) {
+            //中间
+            new_father_page->Init(internal_max_size_);
+            new_father_page->SetSize(new_size);
+            for (int i = change; i < father_guard->GetSize(); ++i) {
+                new_father_page->SetKeyAt(i - change + 1, father_guard->KeyAt(i));
+                new_father_page->SetValueAt(i - change + 1, father_guard->ValueAt(i));
+            }
+            new_father_page->SetKeyAt(0, key);
+            new_father_page->SetValueAt(0, right_child);
+        }
+        else {
+            //右边
+            new_father_page->Init(internal_max_size_);
+            new_father_page->SetSize(new_size);
+            for (int i = change; i < father_guard->GetSize(); ++i) {
+                new_father_page->SetKeyAt(i - change, father_guard->KeyAt(i));
+                new_father_page->SetValueAt(i - change, father_guard->ValueAt(i));
+            }
+            slot_num -= change;
+            for (int i = new_father_page->GetSize(); i >= slot_num; --i) {
+                new_father_page->SetKeyAt(i + 1, new_father_page->KeyAt(i));
+                new_father_page->SetValueAt(i + 1, new_father_page->ValueAt(i));
+            }
+            new_father_page->SetKeyAt(slot_num, key);
+            new_father_page->SetValueAt(slot_num, right_child);
+        }
+
+        //修改大小为minsize
+        father_guard->SetSize(change);
+        //向上递归
+        path.write_set_.pop_back();
+        Insert_Up(new_father_page->KeyAt(0), new_father_id, path);
     }
 
 

@@ -93,7 +93,7 @@ namespace bustub {
         auto Insert(const KeyType &key, const ValueType &value, Transaction *txn = nullptr) -> bool;
 
         //回插
-        void InsertIntoParent(const KeyType &key, page_id_t right_child_id, int index);
+        void Insert_Up(const KeyType &key, page_id_t right_child, Context &path);
 
         //看是否安全，用于context（Not Done Yet）
         bool Safe_Insert(const BPlusTreePage *tree_page);
@@ -101,7 +101,7 @@ namespace bustub {
         // Remove a key and its value from this B+ tree.
         void Remove(const KeyType &key, Transaction *txn);
 
-        void RemoveFromParent(int valueIndex, int index);
+        void Remove_Up(int valueIndex, int index);
 
         // Return the value associated with a given key
         auto GetValue(const KeyType &key, std::vector<ValueType> *result, Transaction *txn = nullptr) -> bool;
