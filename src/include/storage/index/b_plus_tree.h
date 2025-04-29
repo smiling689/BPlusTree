@@ -55,6 +55,16 @@ namespace bustub {
         std::deque<ReadPageGuard> read_set_;
 
         auto IsRootPage(page_id_t page_id) -> bool { return page_id == root_page_id_; }
+
+        void clear() {
+            header_page_ = std::nullopt;
+            while (!write_set_.empty()) {
+                write_set_.pop_front();
+            }
+            while (!read_set_.empty()) {
+                read_set_.pop_front();
+            }
+        }
     };
 
 #define BPLUSTREE_TYPE BPlusTree<KeyType, ValueType, KeyComparator>
@@ -66,8 +76,9 @@ namespace bustub {
         using LeafPage = BPlusTreeLeafPage<KeyType, ValueType, KeyComparator>;
 
         enum Op {
-            Find,
-            Insert_or_Remove,
+            find,
+            insert,
+            remove,
         };
 
     public:
@@ -81,7 +92,11 @@ namespace bustub {
         // Insert a key-value pair into this B+ tree.
         auto Insert(const KeyType &key, const ValueType &value, Transaction *txn = nullptr) -> bool;
 
+        //回插
         void InsertIntoParent(const KeyType &key, page_id_t right_child_id, int index);
+
+        //看是否安全，用于context（Not Done Yet）
+        bool Safe_Insert(const BPlusTreePage *tree_page);
 
         // Remove a key and its value from this B+ tree.
         void Remove(const KeyType &key, Transaction *txn);
@@ -91,7 +106,7 @@ namespace bustub {
         // Return the value associated with a given key
         auto GetValue(const KeyType &key, std::vector<ValueType> *result, Transaction *txn = nullptr) -> bool;
 
-        auto FindLeafPage(const KeyType &key, Op op);
+        auto FindLeafPage(const KeyType &key, Op op, Context &ctx);
 
         // Return the page id of the root node
         auto GetRootPageId() -> page_id_t;
