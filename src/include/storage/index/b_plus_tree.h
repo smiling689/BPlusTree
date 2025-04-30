@@ -75,12 +75,6 @@ namespace bustub {
         using InternalPage = BPlusTreeInternalPage<KeyType, page_id_t, KeyComparator>;
         using LeafPage = BPlusTreeLeafPage<KeyType, ValueType, KeyComparator>;
 
-        // enum Op {
-        //     find,
-        //     insert,
-        //     remove,
-        // };
-
     public:
         explicit BPlusTree(std::string name, page_id_t header_page_id, BufferPoolManager *buffer_pool_manager,
                            const KeyComparator &comparator, int leaf_max_size = LEAF_PAGE_SIZE,
