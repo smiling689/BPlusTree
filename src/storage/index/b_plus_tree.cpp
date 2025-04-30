@@ -143,7 +143,7 @@ namespace bustub {
             leaf_page->Init(leaf_max_size_);
             leaf_page->SetSize(1);
             leaf_page->SetAt(0, key, value);
-            path.header_page_ = std::nullopt; // unlock header_page
+            path.header_page_ = std::nullopt;
             return true;
         }
         //树非空
@@ -153,7 +153,7 @@ namespace bustub {
         // auto tmp_page = path.write_set_.back().template As<BPlusTreePage>();
         //如果孩子是安全的，那就可以把head的锁释放掉了
         if (Safe_Insert(path.write_set_.back().As<BPlusTreePage>())) {
-            path.header_page_ = std::nullopt; // unlock header_page
+            path.header_page_ = std::nullopt;
         }
         //开始找叶子
         auto page = path.write_set_.back().As<BPlusTreePage>();
@@ -198,7 +198,7 @@ namespace bustub {
         if (leaf_page->GetSize() < leaf_page->GetMaxSize()) {
             return true;
         }
-        //上面是最基本的插入，没有附加任何向上的操作，下面开始考虑这种情况。Not done yet----By smiling 4.29
+        //上面是最基本的插入，没有附加任何向上的操作，下面开始考虑这种情况。done ----By smiling 4.29
 
         //该叶子结点满了，需要分裂
         auto new_page = 0;
@@ -218,7 +218,6 @@ namespace bustub {
         leaf_page->SetSize(leaf_page->GetMinSize());
         //要上去的那个key，向上插入，调用辅助函数InsertUp来插入
         KeyType up_key = new_leaf->KeyAt(0);
-        //需要处理几个？现在我们在leaf，所以需要处理的是path中除了leaf的所有internal，总计-1个
         Insert_Up(up_key, new_guard.PageId(), path);
         return true;
     }
@@ -348,7 +347,69 @@ namespace bustub {
 
     INDEX_TEMPLATE_ARGUMENTS
     void BPLUSTREE_TYPE::Remove(const KeyType &key, Transaction *txn) {
-        //Your code here
+        //记录路径，方便后续向上分裂（干脆拿context来用了，虽然锁写的不一定对，但是可以当做路径用还是没啥问题的）
+        Context path;
+        // WritePageGuard head_guard
+        path.header_page_ = bpm_->FetchPageWrite(header_page_id_);
+        auto head = path.header_page_->template AsMut<BPlusTreeHeaderPage>();
+        //树为空
+        if (head->root_page_id_ == INVALID_PAGE_ID) {
+            //树为空
+            return;
+        }
+        //树非空
+        path.root_page_id_ = head->root_page_id_;
+        //获取根的写锁
+        path.write_set_.push_back(bpm_->FetchPageWrite(path.root_page_id_));
+        // auto tmp_page = path.write_set_.back().template As<BPlusTreePage>();
+        //如果孩子是安全的，那就可以把head的锁释放掉了
+        if (Safe_Insert(path.write_set_.back().As<BPlusTreePage>())) {
+            path.header_page_ = std::nullopt;
+        }
+        //开始找叶子
+        auto page = path.write_set_.back().As<BPlusTreePage>();
+        while (!page->IsLeafPage()) {
+            //获取现在的这一层，然后向下找next层（用二分）
+            auto now = path.write_set_.back().As<InternalPage>();
+            auto slot_num = BinaryFind(now, key);
+            // if (slot_num == -1) {
+            //     std::cerr << "wrong! cannot find in internal page" << std::endl;
+            //     return false;
+            //     //不该出现
+            // }
+            auto next = now->ValueAt(slot_num);
+            path.write_set_.push_back(bpm_->FetchPageWrite(next));
+            //如果孩子安全，上面的锁都可以不用了，因为不会到这么上面来
+            auto child = path.write_set_.back().template As<BPlusTreePage>();
+            if (Safe_Insert(child)) {
+                while (path.write_set_.size() > 1) {
+                    path.write_set_.pop_front();
+                }
+            }
+            page = child;
+        }
+        //找到leaf，注意这个要用AsMut了，要修改
+        auto leaf_guard = path.write_set_.back().template AsMut<LeafPage>();
+        //重新解释为叶子结点
+        auto *leaf_page = reinterpret_cast<LeafPage *>(leaf_guard);
+        int slot_num = BinaryFind(leaf_page, key);
+        if (slot_num == -1 && comparator_(leaf_page->KeyAt(slot_num), key) != 0) {
+            path.clear();
+            return ;
+        }
+        for (int i = slot_num + 1; i < leaf_page->GetSize(); ++i) {
+            leaf_page->SetAt(i - 1, leaf_page->KeyAt(i), leaf_page->ValueAt(i));
+        }
+        leaf_page->IncreaseSize(-1);
+
+        //如果没有超限，那么删除结束（这部分应该完成了）
+        if (leaf_page->GetSize() >= leaf_page->GetMinSize()) {
+            path.clear();
+            return;
+        }
+
+
+
     }
 
     /*****************************************************************************

@@ -75,11 +75,11 @@ namespace bustub {
         using InternalPage = BPlusTreeInternalPage<KeyType, page_id_t, KeyComparator>;
         using LeafPage = BPlusTreeLeafPage<KeyType, ValueType, KeyComparator>;
 
-        enum Op {
-            find,
-            insert,
-            remove,
-        };
+        // enum Op {
+        //     find,
+        //     insert,
+        //     remove,
+        // };
 
     public:
         explicit BPlusTree(std::string name, page_id_t header_page_id, BufferPoolManager *buffer_pool_manager,
@@ -95,18 +95,20 @@ namespace bustub {
         //回插
         void Insert_Up(const KeyType &key, page_id_t right_child, Context &path);
 
-        //看是否安全，用于context（Not Done Yet）
+        //看是否安全，用于context
         bool Safe_Insert(const BPlusTreePage *tree_page);
 
         // Remove a key and its value from this B+ tree.
         void Remove(const KeyType &key, Transaction *txn);
 
+        //回删
         void Remove_Up(int valueIndex, int index);
+
+        //看是否安全，用于context
+        bool Safe_Remove(const BPlusTreePage *tree_page);
 
         // Return the value associated with a given key
         auto GetValue(const KeyType &key, std::vector<ValueType> *result, Transaction *txn = nullptr) -> bool;
-
-        auto FindLeafPage(const KeyType &key, Op op, Context &ctx);
 
         // Return the page id of the root node
         auto GetRootPageId() -> page_id_t;
