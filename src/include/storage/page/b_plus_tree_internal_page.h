@@ -99,6 +99,8 @@ namespace bustub {
          */
         void SetValueAt(int index, const ValueType &value);
 
+        void SetAt(int index , const KeyType &key, const ValueType &value) ;
+
         auto ToString() const -> std::string {
             std::string kstr = "(";
             bool first = true;

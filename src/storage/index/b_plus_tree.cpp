@@ -297,8 +297,7 @@ namespace bustub {
             }
             father_guard->SetKeyAt(slot_num, key);
             father_guard->SetValueAt(slot_num, right_child);
-        }
-        else if (slot_num == change) {
+        } else if (slot_num == change) {
             //中间
             new_father_page->Init(internal_max_size_);
             new_father_page->SetSize(new_size);
@@ -308,8 +307,7 @@ namespace bustub {
             }
             new_father_page->SetKeyAt(0, key);
             new_father_page->SetValueAt(0, right_child);
-        }
-        else {
+        } else {
             //右边
             new_father_page->Init(internal_max_size_);
             new_father_page->SetSize(new_size);
@@ -363,11 +361,26 @@ namespace bustub {
         path.write_set_.push_back(bpm_->FetchPageWrite(path.root_page_id_));
         // auto tmp_page = path.write_set_.back().template As<BPlusTreePage>();
         //如果孩子是安全的，那就可以把head的锁释放掉了
-        if (Safe_Insert(path.write_set_.back().As<BPlusTreePage>())) {
+        if (Safe_Remove(path.write_set_.back().As<BPlusTreePage>(), true)) {
             path.header_page_ = std::nullopt;
         }
-        //开始找叶子
+
+
         auto page = path.write_set_.back().As<BPlusTreePage>();
+
+        // if (page->IsLeafPage() && page->GetSize() == 1) {
+        //     // std::cerr << "delete the whole tree" << std::endl;
+        //     //如果根就是叶子结点，且size为1，直接删除并返回
+        //     auto leaf_guard = path.write_set_.back().template AsMut<LeafPage>();
+        //     //重新解释为叶子结点
+        //     auto *leaf_page = reinterpret_cast<LeafPage *>(leaf_guard);
+        //     leaf_page->IncreaseSize(-1);
+        //     head->root_page_id_ = INVALID_PAGE_ID;
+        //     path.clear();
+        //     return;
+        // }
+        //开始找叶子
+
         while (!page->IsLeafPage()) {
             //获取现在的这一层，然后向下找next层（用二分）
             auto now = path.write_set_.back().As<InternalPage>();
@@ -381,7 +394,7 @@ namespace bustub {
             path.write_set_.push_back(bpm_->FetchPageWrite(next));
             //如果孩子安全，上面的锁都可以不用了，因为不会到这么上面来
             auto child = path.write_set_.back().template As<BPlusTreePage>();
-            if (Safe_Insert(child)) {
+            if (Safe_Remove(child, false)) {
                 while (path.write_set_.size() > 1) {
                     path.write_set_.pop_front();
                 }
@@ -389,13 +402,25 @@ namespace bustub {
             page = child;
         }
         //找到leaf，注意这个要用AsMut了，要修改
-        auto leaf_guard = path.write_set_.back().template AsMut<LeafPage>();
+        auto &leaf = path.write_set_.back();
+        auto leaf_page = path.write_set_.back().template AsMut<LeafPage>();
         //重新解释为叶子结点
-        auto *leaf_page = reinterpret_cast<LeafPage *>(leaf_guard);
+        // auto *leaf_page = reinterpret_cast<LeafPage *>(leaf_guard);
         int slot_num = BinaryFind(leaf_page, key);
-        if (slot_num == -1 && comparator_(leaf_page->KeyAt(slot_num), key) != 0) {
+        //
+        // if (slot_num == -1 ) {
+        //     std::cerr << "wrong! cannot find in leaf page" << std::endl;
+        //     path.clear();
+        //     return ;
+        // }
+        // if (comparator_(leaf_page->KeyAt(slot_num), key) != 0) {
+        //     std::cerr << "wrong! cannot find in leaf page" << std::endl;
+        //     path.clear();
+        //     return ;
+        // }
+        if (slot_num == -1 || comparator_(leaf_page->KeyAt(slot_num), key) != 0) {
             path.clear();
-            return ;
+            return;
         }
         for (int i = slot_num + 1; i < leaf_page->GetSize(); ++i) {
             leaf_page->SetAt(i - 1, leaf_page->KeyAt(i), leaf_page->ValueAt(i));
@@ -408,8 +433,170 @@ namespace bustub {
             return;
         }
 
+        if (leaf.PageId() == head->root_page_id_) {
+            if (leaf_page->GetSize() == 0) {
+                head->root_page_id_ = INVALID_PAGE_ID;
+            }
+            path.clear();
+            return;
+        }
+        //done    don't change it forever if no need ------4.30 smiling
 
 
+        //下面开始处理要合并或者向上走的情况。注意到其实之后的操作和这里是完全一致的，所以其实只需要在Remove_Up中把下面的内容直接复制上去就好了
+        auto parent_page = path.write_set_[path.write_set_.size() - 2].AsMut<InternalPage>();
+        auto pos = BinaryFind(parent_page, key);
+
+        // left
+        if (pos > parent_page->GetSize()) {
+            page_id_t left_id = parent_page->ValueAt(pos - 1);
+            auto left_guard = bpm_->FetchPageWrite(left_id);
+            auto left_page = left_guard.AsMut<LeafPage>();
+
+            if (left_page->GetSize() + leaf_page->GetSize() >= 2 * left_page->GetMinSize()) {
+                //能借一个的话
+                leaf_page->IncreaseSize(1);
+                for (int i = leaf_page->GetSize() - 1; i >= 1; --i) {
+                    leaf_page->SetAt(i, leaf_page->KeyAt(i - 1), leaf_page->ValueAt(i - 1));
+                }
+                leaf_page->SetAt(0, left_page->KeyAt(left_page->GetSize() - 1),
+                                 left_page->ValueAt(left_page->GetSize() - 1));
+                left_page->IncreaseSize(-1);
+                parent_page->SetKeyAt(pos, leaf_page->KeyAt(0));
+            } else {
+                int now_size = left_page->GetSize();
+                left_page->IncreaseSize(leaf_page->GetSize());
+                for (int i = 0; i < leaf_page->GetSize(); ++i) {
+                    left_page->SetAt(i + now_size, leaf_page->KeyAt(i), leaf_page->ValueAt(i));
+                }
+                left_page->SetNextPageId(leaf_page->GetNextPageId());
+                path.write_set_.pop_back();
+                Remove_Up(pos, path);
+            }
+        } else {
+            // right
+            page_id_t right_id = parent_page->ValueAt(pos + 1);
+            auto right_guard = bpm_->FetchPageWrite(right_id);
+            auto right_page = right_guard.AsMut<LeafPage>();
+
+            if (right_page->GetSize() + leaf_page->GetSize() >= 2 * leaf_page->GetMinSize()) {
+                // borrow
+                leaf_page->IncreaseSize(1);
+                leaf_page->SetAt(leaf_page->GetSize() - 1, right_page->KeyAt(0),
+                                 right_page->ValueAt(0));
+                for (int i = 0; i < right_page->GetSize() - 1; ++i) {
+                    right_page->SetAt(i, right_page->KeyAt(i + 1), right_page->ValueAt(i + 1));
+                }
+                right_page->IncreaseSize(-1);
+                parent_page->SetKeyAt(pos + 1, right_page->KeyAt(0));
+            } else {
+                // merge
+                int now_size = leaf_page->GetSize();
+                leaf_page->IncreaseSize(right_page->GetSize());
+                for (int i = 0; i < right_page->GetSize(); ++i) {
+                    leaf_page->SetAt(i + now_size, right_page->KeyAt(i), right_page->ValueAt(i));
+                }
+                leaf_page->SetNextPageId(right_page->GetNextPageId());
+                path.write_set_.pop_back();
+                Remove_Up(pos + 1, path);
+            }
+        }
+
+        path.clear();
+    }
+
+    INDEX_TEMPLATE_ARGUMENTS
+    void BPLUSTREE_TYPE::Remove_Up(int pos1, Context &path) {
+        auto &page_guard = path.write_set_.back();
+        auto page = page_guard.AsMut<InternalPage>();
+        for (int i = pos1; i < page->GetSize() - 1; ++i) {
+            page->SetAt(i, page->KeyAt(i + 1), page->ValueAt(i + 1));
+        }
+
+        //如果安全，那这就是最后一次了，return
+        if (page->GetSize() >= page->GetMinSize()) {
+            page->IncreaseSize(-1);
+            return;
+        }
+
+        page->IncreaseSize(-1);
+        if (path.IsRootPage(page_guard.PageId())) {
+            if (page->GetSize() == 1) {
+                auto header_page = path.header_page_->AsMut<BPlusTreeHeaderPage>();
+                header_page->root_page_id_ = page->ValueAt(0);
+            }
+            return;
+        }
+        auto parent_page = path.write_set_[path.write_set_.size() - 2].AsMut<InternalPage>();
+        // auto pos = BinaryFind(parent_page, key);
+        auto pos = parent_page->ValueIndex(page_guard.PageId());
+        // left
+        if (pos >= parent_page->GetSize()) {
+            page_id_t left_id = parent_page->ValueAt(pos - 1);
+            auto left_guard = bpm_->FetchPageWrite(left_id);
+            auto left_page = left_guard.AsMut<InternalPage>();
+
+            // auto merge = left_page->GetSize() + page->GetSize();
+            if (left_page->GetSize() + page->GetSize() > 2 * left_page->GetMinSize()) {
+                page->IncreaseSize(1);
+                //全部后移
+                for (int i = page->GetSize() - 2; i >= 0; --i) {
+                    page->SetAt(i + 1, page->KeyAt(i), page->ValueAt(i));
+                }
+                page->SetAt(0, left_page->KeyAt(left_page->GetSize() - 1),
+                            left_page->ValueAt(left_page->GetSize() - 1));
+                left_page->IncreaseSize(-1);
+                parent_page->SetKeyAt(pos, page->KeyAt(0));
+            } else {
+                int now_size = left_page->GetSize();
+                left_page->IncreaseSize(page->GetSize());
+                for (int i = 0; i < page->GetSize(); ++i) {
+                    left_page->SetAt(i + now_size, page->KeyAt(i), page->ValueAt(i));
+                }
+                // left_page->SetNextPageId(page->GetNextPageId());
+                path.write_set_.pop_back();
+                Remove_Up(pos, path);
+            }
+        } else {
+            // right
+            page_id_t right_id = parent_page->ValueAt(pos + 1);
+            auto right_guard = bpm_->FetchPageWrite(right_id);
+            auto right_page = right_guard.AsMut<InternalPage>();
+
+            if (right_page->GetSize() + page->GetSize() > 2 * page->GetMinSize()) {
+                page->IncreaseSize(1);
+                page->SetAt(page->GetSize() - 1, right_page->KeyAt(0),
+                            right_page->ValueAt(0));
+                for (int i = 0; i < right_page->GetSize() - 1; ++i) {
+                    right_page->SetAt(i, right_page->KeyAt(i + 1), right_page->ValueAt(i + 1));
+                }
+                right_page->IncreaseSize(-1);
+                //记得要改parent
+                parent_page->SetKeyAt(pos + 1, right_page->KeyAt(0));
+            } else {
+                // merge
+                int now_size = page->GetSize();
+                page->IncreaseSize(right_page->GetSize());
+                for (int i = 0; i < right_page->GetSize(); ++i) {
+                    page->SetAt(i + now_size, right_page->KeyAt(i), right_page->ValueAt(i));
+                }
+                // page->SetNextPageId(right_page->GetNextPageId());
+                path.write_set_.pop_back();
+                Remove_Up(pos + 1, path);
+            }
+        }
+    }
+
+
+    INDEX_TEMPLATE_ARGUMENTS
+    bool BPLUSTREE_TYPE::Safe_Remove(const BPlusTreePage *page, bool root) {
+        if (root && page->IsLeafPage()) {
+            return page->GetSize() > 1;
+        }
+        if (root) {
+            return page->GetSize() > 2;
+        }
+        return page->GetSize() > page->GetMinSize();
     }
 
     /*****************************************************************************

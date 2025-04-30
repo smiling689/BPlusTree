@@ -102,10 +102,10 @@ namespace bustub {
         void Remove(const KeyType &key, Transaction *txn);
 
         //回删
-        void Remove_Up(int valueIndex, int index);
+        void Remove_Up(int pos, Context &path);
 
         //看是否安全，用于context
-        bool Safe_Remove(const BPlusTreePage *tree_page);
+        bool Safe_Remove(const BPlusTreePage *tree_page , bool root);
 
         // Return the value associated with a given key
         auto GetValue(const KeyType &key, std::vector<ValueType> *result, Transaction *txn = nullptr) -> bool;
